@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anukriti-api"
+version = "0.1.0"
+description = "Unified FastAPI backend for the Anukriti platform — integrates pgx-core (PyPI) + anukriti-swarm (runtime) for the Base44 frontend"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Anukriti" }]
+
+dependencies = [
+    "fastapi==0.111.0",
+    "uvicorn==0.29.0",
+    "pydantic==2.7.1",
+    "anukriti-pgx-core==0.2.1",
+]
+
+[project.optional-dependencies]
+mongo = ["pymongo==4.17.0"]
+dev = [
+    "pytest==8.2.0",
+    "httpx==0.27.0",
+    "ruff==0.4.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["tests*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
