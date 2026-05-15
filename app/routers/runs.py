@@ -24,6 +24,7 @@ from app.adapters import (
     to_swarm_context,
 )
 from app.persistence import get_run_store, new_run_id, utcnow_iso
+from app import webhooks as wh
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -144,6 +145,25 @@ def create_run(body: RunRequestBody) -> dict[str, Any]:
         "created_at": utcnow_iso(),
     }
     get_run_store().save(run_id, document)
+
+    # Fire webhooks (best-effort, non-blocking).
+    allows = bool((report.final_recommendation or {}).get("allows_synthesis", False))
+    event_name = "run_completed" if allows else "safe_abstention"
+    try:
+        wh.dispatch(
+            event_name,
+            {
+                "event": event_name,
+                "run_id": run_id,
+                "audit": audit,
+                "calling": calling,
+                "decision": audit.get("decision"),
+                "verdict": audit.get("verdict"),
+            },
+        )
+    except Exception:
+        # Webhook delivery must never break the API response.
+        pass
 
     return {
         "run_id": run_id,

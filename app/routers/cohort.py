@@ -1,28 +1,20 @@
 """/cohort router — deterministic synthetic-cohort generation.
 
-Wraps the swarm's `core/simulation/` types and the `demos/cohort_demo`
-sampler (Hardy-Weinberg over real CPIC + 1000G allele frequencies) so
-the frontend's `lib/thousandGenomes.js` can be replaced by a single
-backend call.
+Wraps `core/simulation/` types and `demos/cohort_workflows` (which
+ships per-workflow frequency tables for all 3 frontend workflows).
 
-Stage-1 guarantee (per `core/simulation/__init__.py`):
-    Only public + aggregate data is used (CPIC tables, 1000 Genomes
-    super-population frequencies, IndiGen, GenomeAsia Pilot). No
-    controlled-access data ever touches this endpoint.
+Stage-1 guarantee (per `core/simulation/__init__.py`): only public +
+aggregate data is used. Sources per workflow are listed in
+`cohort_workflows.WORKFLOW_SOURCES`.
 
 Determinism:
     A request with the same (workflow, population, n, seed) always
-    produces the same cohort. The default seed is 42 (matches
-    `demos/cohort_demo.RNG_SEED`).
-
-Today the swarm only ships frequency data for CYP2C19. Other workflows
-return a 422 with a clear "frequencies_unavailable" code so the
-frontend can render the right empty-state.
+    produces the same cohort. Default seed is 42.
 """
 from __future__ import annotations
 
 import random
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -37,23 +29,13 @@ from core.simulation import (  # type: ignore[import-not-found]
     SyntheticPatient,
     VirtualPopulation,
 )
-from demos.cohort_demo import (  # type: ignore[import-not-found]
-    DIPLOTYPE_TO_PHENOTYPE,
-    PHENOTYPE_TO_OUTCOME,
-    POPULATION_FREQUENCIES,
-    POPULATION_SOURCES,
-    _canonical_diplotype,
-)
+from demos.cohort_demo import _canonical_diplotype  # type: ignore[import-not-found]
+from demos.cohort_workflows import WORKFLOW_TABLES  # type: ignore[import-not-found]
 
 from app.adapters import WORKFLOW_TO_SCOPE
 
 
 router = APIRouter(prefix="/cohort", tags=["cohort"])
-
-
-# ---------------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------------
 
 
 class CohortGenerateBody(BaseModel):
@@ -63,19 +45,8 @@ class CohortGenerateBody(BaseModel):
     seed: int = Field(42, description="RNG seed; same seed produces same cohort")
 
 
-# Workflows for which we have frequency tables seeded today.
-SUPPORTED_COHORT_WORKFLOWS: set[str] = {"clopidogrel"}
-
-
-# ---------------------------------------------------------------------------
-# Endpoint
-# ---------------------------------------------------------------------------
-
-
 @router.post("/generate")
 def generate_cohort(body: CohortGenerateBody) -> dict[str, Any]:
-    """Deterministically sample a synthetic cohort with outcome distribution."""
-
     if body.workflow not in WORKFLOW_TO_SCOPE:
         raise HTTPException(
             status_code=422,
@@ -85,18 +56,13 @@ def generate_cohort(body: CohortGenerateBody) -> dict[str, Any]:
                 "supported": sorted(WORKFLOW_TO_SCOPE),
             },
         )
-
-    if body.workflow not in SUPPORTED_COHORT_WORKFLOWS:
+    if body.workflow not in WORKFLOW_TABLES:
         raise HTTPException(
             status_code=422,
             detail={
                 "code": "frequencies_unavailable",
                 "workflow": body.workflow,
-                "detail": (
-                    f"Cohort frequencies are only seeded for "
-                    f"{sorted(SUPPORTED_COHORT_WORKFLOWS)} today; "
-                    "warfarin and simvastatin require KG seed expansion."
-                ),
+                "supported": sorted(WORKFLOW_TABLES),
             },
         )
 
@@ -112,22 +78,28 @@ def generate_cohort(body: CohortGenerateBody) -> dict[str, Any]:
             },
         )
 
-    if super_pop not in POPULATION_FREQUENCIES:
+    table = WORKFLOW_TABLES[body.workflow]
+    gene = cast(str, table["gene"])
+    drug = cast(str, table["drug"])
+    all_freqs = cast(dict[SuperPopulation, dict[str, float]], table["freqs"])
+    diplotype_to_phenotype = cast(dict[str, str], table["diplotype_to_phenotype"])
+    phenotype_to_outcome = cast(dict[str, DrugSafetyOutcome], table["phenotype_to_outcome"])
+    source = cast(str, table["source"])
+
+    if super_pop not in all_freqs:
         raise HTTPException(
             status_code=422,
             detail={
                 "code": "frequencies_unavailable_for_population",
+                "workflow": body.workflow,
                 "population": super_pop.value,
-                "supported": sorted(p.value for p in POPULATION_FREQUENCIES),
+                "supported": sorted(p.value for p in all_freqs),
             },
         )
 
-    drug, gene = WORKFLOW_TO_SCOPE[body.workflow]
+    freqs = all_freqs[super_pop]
     rng = random.Random(body.seed)
 
-    # Build the VirtualPopulation record (validates + carries provenance).
-    freqs = POPULATION_FREQUENCIES[super_pop]
-    source = POPULATION_SOURCES[super_pop]
     virtual_pop = VirtualPopulation(
         super_population=super_pop,
         gene=gene,
@@ -135,7 +107,6 @@ def generate_cohort(body: CohortGenerateBody) -> dict[str, Any]:
         source=source,
     )
 
-    # Sample n synthetic patients (Hardy-Weinberg, two independent allele draws).
     alleles = list(freqs.keys())
     weights = list(freqs.values())
     patients: list[SyntheticPatient] = []
@@ -154,9 +125,9 @@ def generate_cohort(body: CohortGenerateBody) -> dict[str, Any]:
         )
         patients.append(patient)
 
-        phenotype = DIPLOTYPE_TO_PHENOTYPE.get(diplotype)
+        phenotype = diplotype_to_phenotype.get(diplotype)
         outcome = (
-            PHENOTYPE_TO_OUTCOME[phenotype]
+            phenotype_to_outcome[phenotype]
             if phenotype is not None
             else DrugSafetyOutcome.REFUSED
         )
@@ -194,10 +165,10 @@ def generate_cohort(body: CohortGenerateBody) -> dict[str, Any]:
             {
                 "patient_id": p.patient_id,
                 "diplotype": p.diplotype,
-                "phenotype": DIPLOTYPE_TO_PHENOTYPE.get(p.diplotype, "Unknown"),
+                "phenotype": diplotype_to_phenotype.get(p.diplotype, "Unknown"),
                 "outcome": (
-                    PHENOTYPE_TO_OUTCOME[DIPLOTYPE_TO_PHENOTYPE[p.diplotype]].value
-                    if p.diplotype in DIPLOTYPE_TO_PHENOTYPE
+                    phenotype_to_outcome[diplotype_to_phenotype[p.diplotype]].value
+                    if p.diplotype in diplotype_to_phenotype
                     else DrugSafetyOutcome.REFUSED.value
                 ),
             }

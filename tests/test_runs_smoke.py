@@ -20,12 +20,17 @@ from fastapi.testclient import TestClient
 def client() -> TestClient:
     # Ensure no MONGODB_URI is set so we use the in-memory store.
     os.environ.pop("MONGODB_URI", None)
+    # Disable auth for the bulk smoke tests; auth-specific tests turn
+    # it back on inside their own fixtures (see test_auth_*).
+    os.environ["ANUKRITI_AUTH_DISABLED"] = "1"
     # Reset the singletons so tests are isolated from any prior state.
     from app.persistence import reset_run_store
     from app.adapters import reset_runtime
+    from app.store import reset_stores
 
     reset_run_store()
     reset_runtime()
+    reset_stores()
 
     from app.main import build_app
 
@@ -298,16 +303,18 @@ def test_post_cohort_generate_clopidogrel_sas_is_deterministic(
     assert 5 <= alt <= 25, f"PM count {alt} outside expected HW range for SAS"
 
 
-def test_post_cohort_generate_unsupported_workflow_returns_422(
+def test_post_cohort_generate_warfarin_works(
     client: TestClient,
 ) -> None:
     r = client.post(
         "/cohort/generate",
         json={"workflow": "warfarin", "population": "SAS", "n": 50, "seed": 1},
     )
-    # warfarin is a known workflow but cohort frequencies aren't seeded yet.
-    assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "frequencies_unavailable"
+    # warfarin is now seeded for all 5 super-populations.
+    assert r.status_code == 200
+    body = r.json()
+    assert body["gene"] == "CYP2C9"
+    assert sum(body["outcome_distribution"].values()) == 50
 
 
 def test_post_cohort_generate_bad_population_returns_400(client: TestClient) -> None:
