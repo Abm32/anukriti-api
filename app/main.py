@@ -19,6 +19,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
 from app.persistence import get_run_store
+from app.routers import benchmarks as benchmarks_router
+from app.routers import cohort as cohort_router
+from app.routers import exports as exports_router
+from app.routers import llm_context as llm_context_router
 from app.routers import runs as runs_router
 
 
@@ -39,7 +43,10 @@ def build_app() -> FastAPI:
     app = FastAPI(
         title="anukriti-api",
         version=__version__,
-        description="Unified backend for the Anukriti platform — pgx-core + swarm + Base44 frontend.",
+        description=(
+            "Unified backend for the Anukriti platform — pgx-core + swarm + "
+            "Base44 frontend."
+        ),
     )
 
     app.add_middleware(
@@ -51,6 +58,10 @@ def build_app() -> FastAPI:
     )
 
     app.include_router(runs_router.router)
+    app.include_router(cohort_router.router)
+    app.include_router(exports_router.router)
+    app.include_router(llm_context_router.router)
+    app.include_router(benchmarks_router.router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict[str, Any]:
@@ -69,13 +80,18 @@ def build_app() -> FastAPI:
             "service": "anukriti-api",
             "version": __version__,
             "endpoints": {
-                "health": "/health",
-                "runs.create": "POST /runs",
-                "runs.list":   "GET  /runs",
-                "runs.get":    "GET  /runs/{run_id}",
-                "runs.compare":"POST /runs/compare",
-                "openapi":     "/openapi.json",
-                "docs":        "/docs",
+                "health":          "/health",
+                "runs.create":     "POST /runs",
+                "runs.list":       "GET  /runs",
+                "runs.get":        "GET  /runs/{run_id}",
+                "runs.compare":    "POST /runs/compare",
+                "cohort.generate": "POST /cohort/generate",
+                "exports.create":  "POST /exports",
+                "llm_context":     "POST /llm-context",
+                "benchmarks":      "GET  /benchmarks",
+                "scenarios":       "GET  /scenarios",
+                "openapi":         "/openapi.json",
+                "docs":            "/docs",
             },
         }
 

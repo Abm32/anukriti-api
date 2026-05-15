@@ -198,3 +198,180 @@ def test_post_runs_compare_diffs_two_runs(client: TestClient) -> None:
     assert len(body["diff"]["rows"]) == 2
     pops = {row["population"] for row in body["diff"]["rows"]}
     assert pops == {"SAS", "EUR"}
+
+
+# ---------------------------------------------------------------------------
+# /benchmarks
+# ---------------------------------------------------------------------------
+
+
+def test_get_benchmarks_returns_pinned_scenarios(client: TestClient) -> None:
+    r = client.get("/benchmarks")
+    assert r.status_code == 200
+    body = r.json()
+    # Swarm ships 12 pinned scenarios across 3 genes.
+    assert body["count"] >= 12
+    assert "CYP2C19" in body["by_gene"]
+    assert "CYP2D6" in body["by_gene"]
+    assert "HLA-B" in body["by_gene"]
+    sample = body["scenarios"][0]
+    for k in ("scenario_id", "gene", "drug", "population", "diplotype",
+              "expected_phenotype", "expected_verdict", "description"):
+        assert k in sample
+
+
+# ---------------------------------------------------------------------------
+# /scenarios
+# ---------------------------------------------------------------------------
+
+
+def test_get_scenarios_returns_three_canonical(client: TestClient) -> None:
+    r = client.get("/scenarios")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 3
+    ids = {s["id"] for s in body["scenarios"]}
+    assert ids == {
+        "cyp2c19_clopidogrel_sas",
+        "hlab_cbz_eas",
+        "cyp2d6_codeine_afr",
+    }
+
+
+# ---------------------------------------------------------------------------
+# /llm-context
+# ---------------------------------------------------------------------------
+
+
+def test_post_llm_context_returns_grounded_payload(client: TestClient) -> None:
+    r = client.post(
+        "/llm-context",
+        json={
+            "workflow": "clopidogrel",
+            "snps": [{"id": "rs4244285"}, {"id": "rs12248560"}],
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["workflow"] == "clopidogrel"
+    assert body["drug"] == "clopidogrel"
+    assert body["gene"] == "CYP2C19"
+    assert body["rule_version"].startswith("anukriti-pgx-core==")
+    # All 4 CYP2C19 rsIDs we annotate should be present.
+    rsids = {v["rsid"] for v in body["variants"]}
+    assert {"rs4244285", "rs4986893", "rs12248560", "rs17884712"} <= rsids
+    # Phenotypes exposed for the workflow.
+    assert any(p["name"] == "Poor Metabolizer" for p in body["phenotypes"])
+    # Grounding instructions are present.
+    assert any("rule_version" in s for s in body["grounding_instructions"])
+
+
+def test_post_llm_context_unknown_workflow_returns_422(client: TestClient) -> None:
+    r = client.post("/llm-context", json={"workflow": "garbage", "snps": []})
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "unknown_workflow"
+
+
+# ---------------------------------------------------------------------------
+# /cohort/generate
+# ---------------------------------------------------------------------------
+
+
+def test_post_cohort_generate_clopidogrel_sas_is_deterministic(
+    client: TestClient,
+) -> None:
+    body = {"workflow": "clopidogrel", "population": "SAS", "n": 100, "seed": 42}
+    a = client.post("/cohort/generate", json=body).json()
+    b = client.post("/cohort/generate", json=body).json()
+
+    # Determinism: identical seed -> identical outcome distribution + patients.
+    assert a["outcome_distribution"] == b["outcome_distribution"]
+    assert [p["diplotype"] for p in a["patients"]] == [
+        p["diplotype"] for p in b["patients"]
+    ]
+
+    # Sanity: SAS at seed=42 with 100 patients should have non-trivial PM count
+    # (CYP2C19*2 freq is 0.36 in SAS; HW expects ~13% PM = ~13 patients).
+    assert a["cohort_size"] == 100
+    assert sum(a["outcome_distribution"].values()) == 100
+    alt = a["outcome_distribution"]["alternative_recommended"]
+    assert 5 <= alt <= 25, f"PM count {alt} outside expected HW range for SAS"
+
+
+def test_post_cohort_generate_unsupported_workflow_returns_422(
+    client: TestClient,
+) -> None:
+    r = client.post(
+        "/cohort/generate",
+        json={"workflow": "warfarin", "population": "SAS", "n": 50, "seed": 1},
+    )
+    # warfarin is a known workflow but cohort frequencies aren't seeded yet.
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "frequencies_unavailable"
+
+
+def test_post_cohort_generate_bad_population_returns_400(client: TestClient) -> None:
+    r = client.post(
+        "/cohort/generate",
+        json={"workflow": "clopidogrel", "population": "MARS", "n": 10, "seed": 1},
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "bad_population"
+
+
+# ---------------------------------------------------------------------------
+# /exports
+# ---------------------------------------------------------------------------
+
+
+def test_post_exports_returns_signed_envelope(client: TestClient) -> None:
+    posted = client.post("/runs", json=CLOPIDOGREL_SAS_PM).json()
+    run_id = posted["run_id"]
+
+    r = client.post("/exports", json={"run_id": run_id, "format": "reproducibility"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["algorithm"] == "HMAC-SHA256"
+    assert body["key_id"]
+    assert len(body["signature"]) == 64  # SHA256 hex = 64 chars
+    # Payload is what the signature was computed over.
+    assert body["payload"]["run_id"] == run_id
+    assert body["payload"]["format"] == "reproducibility"
+    assert "audit" in body["payload"] and "report" in body["payload"]
+
+
+def test_post_exports_unknown_run_returns_404(client: TestClient) -> None:
+    r = client.post(
+        "/exports",
+        json={"run_id": "run_not_real", "format": "reproducibility"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "run_not_found"
+
+
+def test_post_exports_unknown_format_returns_422(client: TestClient) -> None:
+    posted = client.post("/runs", json=CLOPIDOGREL_SAS_PM).json()
+    r = client.post(
+        "/exports",
+        json={"run_id": posted["run_id"], "format": "klingon-invoice"},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "unknown_format"
+
+
+# ---------------------------------------------------------------------------
+# Determinism between two POST /runs calls with the same input
+# ---------------------------------------------------------------------------
+
+
+def test_post_runs_is_deterministic_per_input(client: TestClient) -> None:
+    a = client.post("/runs", json=CLOPIDOGREL_SAS_PM).json()
+    b = client.post("/runs", json=CLOPIDOGREL_SAS_PM).json()
+    # Identical input -> identical decision/verdict/uncertainty.
+    a_suff = a["report"]["evidence_sufficiency"]
+    b_suff = b["report"]["evidence_sufficiency"]
+    assert a_suff["sufficiency_decision"] == b_suff["sufficiency_decision"]
+    assert a_suff["verdict"] == b_suff["verdict"]
+    assert a_suff["uncertainty_score"] == b_suff["uncertainty_score"]
+    # Calling result is byte-identical.
+    assert a["calling"]["diplotype"] == b["calling"]["diplotype"]

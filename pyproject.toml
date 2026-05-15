@@ -13,6 +13,9 @@ authors = [{ name = "Anukriti" }]
 
 dependencies = [
     "fastapi==0.111.0",
+    # starlette upper-bound — fastapi 0.111.0 calls `on_startup`/`on_shutdown`
+    # on starlette.Router, removed in starlette 0.38.
+    "starlette>=0.37.2,<0.38",
     "uvicorn==0.29.0",
     "pydantic==2.7.1",
     "anukriti-pgx-core==0.2.1",

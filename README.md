@@ -155,9 +155,19 @@ reasoning core. Track them as separate work:
 - Authentication / API keys → middleware over FastAPI
 - Quotas / rate limiting → `slowapi` or `fastapi-limiter`
 - Webhooks → `WebhookDispatcher` + Mongo collection
-- Server-signed exports → HMAC-SHA256 over the cached report
 - 9 P2 entities (Project, RunComment, etc.) → standard CRUD; one router each
-- Cohort generator endpoint → wraps `anukriti-swarm/demos/cohort_demo.py`
 
 Each is a small, self-contained additional router. The reasoning core
-(adapters → swarm runtime → store) is stable; everything else stacks on top.
+(adapters → swarm runtime → store) plus the P1 business endpoints
+(runs / cohort / exports / llm-context / benchmarks) are stable;
+everything else stacks on top.
+
+## Note on starlette pin
+
+`fastapi==0.111.0` calls `on_startup` / `on_shutdown` on `starlette.Router`,
+which were removed in `starlette>=0.38`. We pin `starlette>=0.37.2,<0.38`
+in both `requirements.txt` and `pyproject.toml`. If you `pip install
+fastapi==0.111.0` without the pin you get starlette 1.0+ and the app
+crashes at import time.
+
+The same fix should be applied to `anukriti-swarm/requirements.txt`.

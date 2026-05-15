@@ -1,5 +1,9 @@
 # Runtime dependencies — pinned to match anukriti-swarm and anukriti-pgx-core.
 fastapi==0.111.0
+# starlette upper-bound is required: starlette>=0.38 dropped Router init args
+# that fastapi 0.111.0 still calls (on_startup/on_shutdown). Without this pin
+# a fresh `pip install fastapi==0.111.0` resolves starlette 1.0+ and crashes.
+starlette>=0.37.2,<0.38
 uvicorn==0.29.0
 pydantic==2.7.1
 
